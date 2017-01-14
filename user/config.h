@@ -10,5 +10,7 @@
 #define STATUS_KEY "STATUS="
 
 #define RELAY_PIN 16
+// 0 = infite timeout
+#define TIMEOUT_S 2
 
 #endif
