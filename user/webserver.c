@@ -17,6 +17,9 @@
 #include "page.h"
 #include "main.h"
 
+#include "power_manager.h"
+
+
 #define BACKLOG 10
 #define MAX_POST_REQUEST_SIZE 2048
 
@@ -25,6 +28,8 @@ int path_length = 0;
 
 const char * data_start = NULL;
 int data_length = 0;
+
+char m_url[256];
 
 char* replace(char* str, char* a, char* b)
 {
@@ -93,86 +98,89 @@ static bool http_get_post_value(const char *_data, const char * _key, char *_out
   return false;
 }
 
-int my_url_callback (http_parser* _parser, const char *at, size_t length) {
-  printf("my_url_callback\n");
-  
+int my_url_callback (http_parser* _parser, const char *at, size_t length) {  
   path_start = at;
   path_length = length;
   
+  memset(m_url, 0, sizeof(m_url));
+  memcpy(m_url, path_start, length);
+  
   char format[10];
   memset(format, 0, 10);
-  sprintf(format, "%%.%ds\n", length);
+  sprintf(format, "url: %%.%ds\n", length);
   
   printf(format,path_start);
   return 0;
 }
 
 int my_body_callback (http_parser* _parser, const char *at, size_t length) {
-  printf("===BODY===========\n");
   
   data_start = at;
   data_length = length;
   
-  char format[10];
-  memset(format, 0, 10);
-  sprintf(format, "%%.%ds\n", length);
-  
-//   printf(format,data_start);
-  
-  // really really basic security check
-  bool check = false;
-  uint32_t id = sdk_system_get_chip_id();
-  char security[5];
-  if( http_get_post_value(data_start, "security", security) ) {
-    uint32_t _id = strtol(security, NULL, 10);
-    if(id == _id) {
-      check = true;
+  if(strcmp("/", m_url) == 0) {
+    
+    char format[10];
+    memset(format, 0, 10);
+    sprintf(format, "%%.%ds\n", length);
+    
+  //   printf(format,data_start);
+    
+    // really really basic security check
+    bool check = false;
+    uint32_t id = sdk_system_get_chip_id();
+    char security[5];
+    if( http_get_post_value(data_start, "security", security) ) {
+      uint32_t _id = strtol(security, NULL, 10);
+      if(id == _id) {
+        check = true;
+      }
     }
-  }
-  if(! check) {
-    return 0;
-  }
-  bool reset = false;
-  char essid[33];
-  char password[128];
-  
-  bool res = http_get_post_value(data_start, "essid", essid);
-  res &= http_get_post_value(data_start, "password", password);
-  
-  
-  if(res && essid[0] != '\0' && password[0] != '\0') {
-    reset = save_network(essid, password);
-  }
-  
-  char server[128];
-  char port[5];
-  
-  res = http_get_post_value(data_start, "server", server);
-  res &= http_get_post_value(data_start, "port", port);
-  
-  if(res && server[0] != '\0' && port[0] != '\0') {
-    int port_number = strtol(port, NULL, 10);
-    save_server(server, port_number);
-    reset = true;
-  }
-  char upg[256];
-  memset(upg, 0, 256);
-  res = http_get_post_value(data_start, "upgrade", upg);
-  if(res && strcmp(upg, "upgrade") == 0) {
-    struct sockaddr_in addr;
-    socklen_t addr_size = sizeof(struct sockaddr_in);
-    if(getpeername(*((int*)_parser->data), (struct sockaddr *)&addr, &addr_size) == 0 ) {
-      const char * ip = inet_ntoa(addr.sin_addr);
-      printf("fetching upg from %s\n", ip);
-      ota_start(ip);
-    } else {
-      printf("Could not get client ip\n");
+    if(! check) {
+      return 0;
     }
-  }
-  
-  if(reset) {
-    printf("RESET\n");    
-    sdk_system_restart();
+    bool reset = false;
+    char essid[33];
+    char password[128];
+    
+    bool res = http_get_post_value(data_start, "essid", essid);
+    res &= http_get_post_value(data_start, "password", password);
+    
+    
+    if(res && essid[0] != '\0' && password[0] != '\0') {
+      reset = save_network(essid, password);
+    }
+    
+    char server[128];
+    char port[5];
+    
+    res = http_get_post_value(data_start, "server", server);
+    res &= http_get_post_value(data_start, "port", port);
+    
+    if(res && server[0] != '\0' && port[0] != '\0') {
+      int port_number = strtol(port, NULL, 10);
+      save_server(server, port_number);
+      reset = true;
+    }
+    char upg[256];
+    memset(upg, 0, 256);
+    res = http_get_post_value(data_start, "upgrade", upg);
+    if(res && strcmp(upg, "upgrade") == 0) {
+      struct sockaddr_in addr;
+      socklen_t addr_size = sizeof(struct sockaddr_in);
+      if(getpeername(*((int*)_parser->data), (struct sockaddr *)&addr, &addr_size) == 0 ) {
+        const char * ip = inet_ntoa(addr.sin_addr);
+        printf("fetching upg from %s\n", ip);
+        ota_start(ip);
+      } else {
+        printf("Could not get client ip\n");
+      }
+    }
+    
+    if(reset) {
+      printf("RESET\n");    
+      sdk_system_restart();
+    }
   }
   
   return 0;
@@ -230,41 +238,50 @@ void handle(int _sockfd, struct sockaddr_in *_addr) {
     /* Handle error. Usually just close the connection. */
   }
  
-  int size = strlen(page_content)+128;
-  char buffer[size];
-  memset(buffer,0,size);
-  sprintf(buffer, "%s", page_content);
-  
-  replace(buffer, "DATE_BUILD", BUILD_DATE);
-  replace(buffer, "TIME_BUILD", BUILD_TIME);
-  replace(buffer, "GIT_VERSION", GIT_VERSION);
-  uint32_t id = sdk_system_get_chip_id();
-  char id_buff[10];
-  sprintf(id_buff, "%d", id);
-  replace(buffer, "SERIAL", id_buff);
-  
-  struct sdk_station_config config;
-  if(load_network(&config)) {
-    replace(buffer, "ESSID", (char*)config.ssid);
-  } else {
-    replace(buffer, "ESSID", "NONE");
-  }
-  
-  char server[256];
-  memset(server, 0, 256);
-  int port = 0;
-  if(load_server(server, &port)) {
+ 
+ if(strcmp("/", m_url) == 0) {
+    int size = strlen(page_content)+128;
+    char buffer[size];
+    memset(buffer,0,size);
+    sprintf(buffer, "%s", page_content);
     
-    replace(buffer, "SERVER", server);
-    char tmp[5];
-    sprintf(tmp, "%d", port);
-    replace(buffer, "PORT", tmp);
-  } else {
-    replace(buffer, "SERVER", "0.0.0.0");
-    replace(buffer, "PORT", "-1");
+    replace(buffer, "DATE_BUILD", BUILD_DATE);
+    replace(buffer, "TIME_BUILD", BUILD_TIME);
+    replace(buffer, "GIT_VERSION", GIT_VERSION);
+    uint32_t id = sdk_system_get_chip_id();
+    char id_buff[10];
+    sprintf(id_buff, "%d", id);
+    replace(buffer, "SERIAL", id_buff);
+    
+    struct sdk_station_config config;
+    if(load_network(&config)) {
+      replace(buffer, "ESSID", (char*)config.ssid);
+    } else {
+      replace(buffer, "ESSID", "NONE");
+    }
+    
+    char server[256];
+    memset(server, 0, 256);
+    int port = 0;
+    if(load_server(server, &port)) {
+      
+      replace(buffer, "SERVER", server);
+      char tmp[5];
+      sprintf(tmp, "%d", port);
+      replace(buffer, "PORT", tmp);
+    } else {
+      replace(buffer, "SERVER", "0.0.0.0");
+      replace(buffer, "PORT", "-1");
+    }
+    write(_sockfd, buffer, strlen(buffer));
+ } else if(strcmp("/set/on", m_url) == 0 || strcmp("/set/off", m_url) == 0 ) {
+    write(_sockfd, set_page_content, strlen(set_page_content));
+    if(strcmp("/set/on", m_url) == 0) {
+      power_manager_set(true);
+    } else {
+      power_manager_set(false);
+    }
   }
-  
-  write(_sockfd, buffer, strlen(buffer));
   close(_sockfd);
 }
 
